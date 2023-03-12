@@ -19,6 +19,9 @@
 #include <queue>
 #include <random>
 
+// TODO remove
+#include <ostream>
+
 template < typename F, typename S >
 struct std::hash<std::pair<F, S>> {
   std::size_t operator () (const std::pair<F, S> &p) const noexcept {
@@ -63,11 +66,13 @@ struct TrafficNetworkTester {
 template<bool useTwo>
 std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, const Graph& addedNormal = Graph(), const Graph& addedInverse = Graph()) {
 
-  const size_t items = normal.size() + (useTwo ? addedNormal.size() : 0);
-  std::vector<Point> leftStack(items);
+  const size_t items =  useTwo ? addedNormal.size() : normal.size();
+  std::vector<Point> leftStack; leftStack.reserve(items);
 
+  // inverse tracking
   {
-    std::vector<Point> dfsStack(items);
+    std::vector<Point> dfsStack; dfsStack.reserve(items);
+    std::vector<Point> returnStack; returnStack.reserve(items);
     std::vector<bool> visited(items);
 
     for (Point start = 0; start < items; ++start) {
@@ -75,11 +80,15 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
         continue;
       }
 
+      visited[start] = true;
       dfsStack.push_back(start);
+      returnStack.push_back(start);
 
       while(!dfsStack.empty()) {
         const Point point = dfsStack.back();
         dfsStack.pop_back();
+
+        bool anyAdded = false;
 
         if (!useTwo || inverse.size() > point) {
           for (const Point& neighbour : inverse[point]) {
@@ -87,8 +96,10 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
               continue;
             }
 
+            anyAdded = true;
             visited[neighbour] = true;
             dfsStack.push_back(neighbour);
+            returnStack.push_back(neighbour);
           }
         }
 
@@ -98,27 +109,44 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
               continue;
             }
 
+            anyAdded = true;
             visited[neighbour] = true;
             dfsStack.push_back(neighbour);
+            returnStack.push_back(neighbour);
           }
         }
 
-        leftStack.push_back(point);
+        if (!anyAdded) {
+          do {
+            const Point point = returnStack.back();
+            returnStack.pop_back();
+            leftStack.push_back(point);
+          } while (!returnStack.empty() && (dfsStack.empty() || returnStack.back() != dfsStack.back()));
+        }
       }
     }
   }
 
+
+
+  // components finding
   Point componentIdCounter = 0;
-  std::vector<Point> lookup(items, -1);
-  std::vector<Point> dfsStack(items);
+  const Point DUMMY = (Point) -1;
+  std::vector<Point> lookup(items, DUMMY);
+  std::vector<Point> dfsStack; dfsStack.reserve(items);
+
   Graph componentGraph;
 
-  for (const Point toProcess : leftStack) {
-    if (toProcess >= 0) {
+  for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
+    const Point toProcess = *itr;
+    if (lookup[toProcess] != DUMMY) {
       continue;
     }
-    const Point componentId = componentIdCounter++;
 
+    const Point componentId = componentIdCounter++;
+    componentGraph.push_back(std::vector<Point>());
+
+    lookup[toProcess] = componentId;
     dfsStack.push_back(toProcess);
 
     while(!dfsStack.empty()) {
@@ -127,8 +155,7 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
       if (!useTwo || normal.size() > point) {
         for (const Point& neighbour : normal[point]) {
-          if (lookup[neighbour] >= 0) {
-            // TODO set
+          if (lookup[neighbour] != DUMMY) {
             componentGraph[componentId].push_back(lookup[neighbour]);
             continue;
           }
@@ -140,8 +167,7 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
       if constexpr (useTwo) {
         for (const Point& neighbour : addedNormal[point]) {
-          if (lookup[neighbour] >= 0) {
-            // TODO set
+          if (lookup[neighbour] != DUMMY) {
             componentGraph[componentId].push_back(lookup[neighbour]);
             continue;
           }
@@ -165,8 +191,9 @@ TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
   }
 
   // build default graph
-  Graph normalGraph (map.places.size());
+  Graph normalGraph(map.places.size());
   Graph inverseGraph(map.places.size());
+
   for (const auto& connection : map.connections) {
     const Point nameFrom = placeTrans[connection.first];
     const Point nameTo   = placeTrans[connection.second];
@@ -189,11 +216,18 @@ TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
 }
 
 Point translateAdded(const Place& place, const Translation& main, const Lookup& lookup, Translation& added, Point& counter) {
-  const auto itr = main.find(place);
-  if (itr != main.end()) {
-    return lookup[itr -> second];
+  {
+    const auto itr = main.find(place);
+    if (itr != main.end()) {
+      return lookup[itr -> second];
+    }
   }
-
+  {
+    const auto itr = added.find(place);
+    if (itr != added.end()) {
+      return itr -> second;
+    }
+  }
   added.insert({place, counter});
   return counter++;
 }
