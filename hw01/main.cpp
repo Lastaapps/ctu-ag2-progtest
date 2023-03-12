@@ -41,19 +41,181 @@ struct Map {
 
 #endif
 
+using Point = uint32_t;
+using Translation = std::unordered_map<Place, Point>;
+using Lookup = std::vector<Point>;
+using Graph = std::vector<std::vector<Point>>;
+
+const Point FIRST_COMPONENT_ID = 1;
+
 struct TrafficNetworkTester {
   explicit TrafficNetworkTester(const Map&);
 
-  // Count how many areas exist in the network
-  // after adding conns.
-  // Note that conns may introduce new places.
   unsigned count_areas(const std::vector<Connection>& conns) const;
+
+  private:
+    Translation placeTrans;
+    Lookup lookup;
+    Graph componentNormalGraph;
+    Graph componentInverseGraph;
 };
 
-TrafficNetworkTester::TrafficNetworkTester(const Map& map) {}
+template<bool useTwo>
+std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, const Graph& addedNormal = Graph(), const Graph& addedInverse = Graph()) {
+
+  const size_t items = normal.size() + (useTwo ? addedNormal.size() : 0);
+  std::vector<Point> leftStack(items);
+
+  {
+    std::vector<Point> dfsStack(items);
+    std::vector<bool> visited(items);
+
+    for (Point start = 0; start < items; ++start) {
+      if (visited[start]) {
+        continue;
+      }
+
+      dfsStack.push_back(start);
+
+      while(!dfsStack.empty()) {
+        const Point point = dfsStack.back();
+        dfsStack.pop_back();
+
+        if (!useTwo || inverse.size() > point) {
+          for (const Point& neighbour : inverse[point]) {
+            if (visited[neighbour]) {
+              continue;
+            }
+
+            visited[neighbour] = true;
+            dfsStack.push_back(neighbour);
+          }
+        }
+
+        if constexpr (useTwo) {
+          for (const Point& neighbour : addedInverse[point]) {
+            if (visited[neighbour]) {
+              continue;
+            }
+
+            visited[neighbour] = true;
+            dfsStack.push_back(neighbour);
+          }
+        }
+
+        leftStack.push_back(point);
+      }
+    }
+  }
+
+  Point componentIdCounter = 0;
+  std::vector<Point> lookup(items, -1);
+  std::vector<Point> dfsStack(items);
+  Graph componentGraph;
+
+  for (const Point toProcess : leftStack) {
+    if (toProcess >= 0) {
+      continue;
+    }
+    const Point componentId = componentIdCounter++;
+
+    dfsStack.push_back(toProcess);
+
+    while(!dfsStack.empty()) {
+      const Point point = dfsStack.back();
+      dfsStack.pop_back();
+
+      if (!useTwo || normal.size() > point) {
+        for (const Point& neighbour : normal[point]) {
+          if (lookup[neighbour] >= 0) {
+            // TODO set
+            componentGraph[componentId].push_back(lookup[neighbour]);
+            continue;
+          }
+
+          lookup[neighbour] = componentId;
+          dfsStack.push_back(neighbour);
+        }
+      }
+
+      if constexpr (useTwo) {
+        for (const Point& neighbour : addedNormal[point]) {
+          if (lookup[neighbour] >= 0) {
+            // TODO set
+            componentGraph[componentId].push_back(lookup[neighbour]);
+            continue;
+          }
+
+          lookup[neighbour] = componentId;
+          dfsStack.push_back(neighbour);
+        }
+      }
+    }
+  }
+
+  return {std::move(componentGraph), std::move(lookup)};
+}
+
+TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
+  // translate places to ints
+  Point counter = 0;
+  placeTrans.reserve(map.places.size());
+  for (const auto& place : map.places) {
+    placeTrans.emplace(place, counter++);
+  }
+
+  // build default graph
+  Graph normalGraph (map.places.size());
+  Graph inverseGraph(map.places.size());
+  for (const auto& connection : map.connections) {
+    const Point nameFrom = placeTrans[connection.first];
+    const Point nameTo   = placeTrans[connection.second];
+    normalGraph[nameFrom].push_back(nameTo);
+    inverseGraph[nameTo].push_back(nameFrom);
+  }
+
+  // compose normal graph and lookup table
+  auto [solvedGraph, solvedLookup] = solveGraph<false>(normalGraph, inverseGraph);
+  componentNormalGraph = std::move(solvedGraph);
+  lookup = std::move(solvedLookup);
+
+  // compose inverse graph
+  componentInverseGraph = Graph(componentNormalGraph.size());
+  for (Point component = 0; component < componentNormalGraph.size(); ++component) {
+    for(const Point& target : componentNormalGraph[component]) {
+      componentInverseGraph[target].push_back(component);
+    }
+  }
+}
+
+Point translateAdded(const Place& place, const Translation& main, const Lookup& lookup, Translation& added, Point& counter) {
+  const auto itr = main.find(place);
+  if (itr != main.end()) {
+    return lookup[itr -> second];
+  }
+
+  added.insert({place, counter});
+  return counter++;
+}
 
 unsigned TrafficNetworkTester::count_areas(const std::vector<Connection> &conns) const {
-  return 0;
+  const size_t mySize = componentNormalGraph.size();
+  Graph addedNormal(mySize + conns.size() * 2), addedInverse(mySize + conns.size() * 2);
+
+  Point counter = componentNormalGraph.size();
+  Translation addedTranslation;
+
+  for (const auto& connection : conns) {
+    const Point from = translateAdded(connection.first,  placeTrans, lookup, addedTranslation, counter);
+    const Point to   = translateAdded(connection.second, placeTrans, lookup, addedTranslation, counter);
+
+    addedNormal[from].push_back(to);
+    addedInverse[to].push_back(from);
+  }
+
+  auto [solvedGraph, _] = solveGraph<true>(componentNormalGraph, componentInverseGraph, addedNormal, addedInverse);
+  
+  return solvedGraph.size();
 }
 
 #ifndef __PROGTEST__
