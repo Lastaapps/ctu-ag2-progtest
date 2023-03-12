@@ -19,9 +19,6 @@
 #include <queue>
 #include <random>
 
-// TODO remove
-#include <ostream>
-
 template < typename F, typename S >
 struct std::hash<std::pair<F, S>> {
   std::size_t operator () (const std::pair<F, S> &p) const noexcept {
@@ -63,6 +60,11 @@ struct TrafficNetworkTester {
     Graph componentInverseGraph;
 };
 
+
+
+
+
+
 template<bool useTwo>
 std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, const Graph& addedNormal = Graph(), const Graph& addedInverse = Graph()) {
 
@@ -71,18 +73,27 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
   // inverse tracking
   {
-    std::vector<Point> dfsStack; dfsStack.reserve(items);
-    std::vector<Point> returnStack; returnStack.reserve(items);
+    std::vector<Point> dfsStack; dfsStack.reserve(items / 2);
+    std::vector<Point> returnStack; returnStack.reserve(items / 2);
     std::vector<bool> visited(items);
 
-    for (Point start = 0; start < items; ++start) {
-      if (visited[start]) {
-        continue;
+    const auto enqueue = [&dfsStack, &returnStack, &visited](Point point) {
+      if (visited[point]) {
+        return false;
       }
 
-      visited[start] = true;
-      dfsStack.push_back(start);
-      returnStack.push_back(start);
+      visited[point] = true;
+      dfsStack.push_back(point);
+      returnStack.push_back(point);
+
+      return true;
+    };
+
+
+    for (Point start = 0; start < items; ++start) {
+      if (!enqueue(start)) {
+          continue;
+      }
 
       while(!dfsStack.empty()) {
         const Point point = dfsStack.back();
@@ -92,27 +103,13 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
         if (!useTwo || inverse.size() > point) {
           for (const Point& neighbour : inverse[point]) {
-            if (visited[neighbour]) {
-              continue;
-            }
-
-            anyAdded = true;
-            visited[neighbour] = true;
-            dfsStack.push_back(neighbour);
-            returnStack.push_back(neighbour);
+            anyAdded |= enqueue(neighbour);
           }
         }
 
         if constexpr (useTwo) {
           for (const Point& neighbour : addedInverse[point]) {
-            if (visited[neighbour]) {
-              continue;
-            }
-
-            anyAdded = true;
-            visited[neighbour] = true;
-            dfsStack.push_back(neighbour);
-            returnStack.push_back(neighbour);
+            anyAdded |= enqueue(neighbour);
           }
         }
 
@@ -129,51 +126,51 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
 
 
-  // components finding
-  Point componentIdCounter = 0;
   const Point DUMMY = (Point) -1;
-  std::vector<Point> lookup(items, DUMMY);
-  std::vector<Point> dfsStack; dfsStack.reserve(items);
-
+  Lookup lookup(items, DUMMY);
   Graph componentGraph;
 
-  for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
-    const Point toProcess = *itr;
-    if (lookup[toProcess] != DUMMY) {
-      continue;
-    }
+  // components finding
+  {
+    Point componentIdCounter = 0;
+    std::vector<Point> dfsStack; dfsStack.reserve(items / 2);
 
-    const Point componentId = componentIdCounter++;
-    componentGraph.push_back(std::vector<Point>());
+    const auto enqueue = [&componentGraph, &dfsStack, &lookup](Point point, Point componentId) {
+      if (lookup[point] != DUMMY) {
+        componentGraph[componentId].push_back(lookup[point]);
+      } else {
+        lookup[point] = componentId;
+        dfsStack.push_back(point);
+      }
+    };
 
-    lookup[toProcess] = componentId;
-    dfsStack.push_back(toProcess);
+    for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
+      const Point toProcess = *itr;
 
-    while(!dfsStack.empty()) {
-      const Point point = dfsStack.back();
-      dfsStack.pop_back();
-
-      if (!useTwo || normal.size() > point) {
-        for (const Point& neighbour : normal[point]) {
-          if (lookup[neighbour] != DUMMY) {
-            componentGraph[componentId].push_back(lookup[neighbour]);
-            continue;
-          }
-
-          lookup[neighbour] = componentId;
-          dfsStack.push_back(neighbour);
-        }
+      if (lookup[toProcess] != DUMMY) {
+        continue;
       }
 
-      if constexpr (useTwo) {
-        for (const Point& neighbour : addedNormal[point]) {
-          if (lookup[neighbour] != DUMMY) {
-            componentGraph[componentId].push_back(lookup[neighbour]);
-            continue;
-          }
+      const Point componentId = componentIdCounter++;
+      componentGraph.push_back(std::vector<Point>());
 
-          lookup[neighbour] = componentId;
-          dfsStack.push_back(neighbour);
+      lookup[toProcess] = componentId;
+      dfsStack.push_back(toProcess);
+
+      while(!dfsStack.empty()) {
+        const Point point = dfsStack.back();
+        dfsStack.pop_back();
+
+        if (!useTwo || normal.size() > point) {
+          for (const Point& neighbour : normal[point]) {
+            enqueue(neighbour, componentId);
+          }
+        }
+
+        if constexpr (useTwo) {
+          for (const Point& neighbour : addedNormal[point]) {
+            enqueue(neighbour, componentId);
+          }
         }
       }
     }
@@ -181,6 +178,7 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
   return {std::move(componentGraph), std::move(lookup)};
 }
+
 
 TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
   // translate places to ints
@@ -215,33 +213,44 @@ TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
   }
 }
 
-Point translateAdded(const Place& place, const Translation& main, const Lookup& lookup, Translation& added, Point& counter) {
+
+std::pair<Point, bool> translateAdded(const Place& place, const Translation& main, const Lookup& lookup, Translation& added, Point& counter) {
   {
     const auto itr = main.find(place);
     if (itr != main.end()) {
-      return lookup[itr -> second];
+      return {lookup[itr -> second], false};
     }
   }
   {
+
     const auto itr = added.find(place);
     if (itr != added.end()) {
-      return itr -> second;
+      return {itr -> second, false};
     }
   }
   added.insert({place, counter});
-  return counter++;
+  return {counter++, true};
 }
 
 unsigned TrafficNetworkTester::count_areas(const std::vector<Connection> &conns) const {
   const size_t mySize = componentNormalGraph.size();
-  Graph addedNormal(mySize + conns.size() * 2), addedInverse(mySize + conns.size() * 2);
+  Graph addedNormal(mySize), addedInverse(mySize);
 
   Point counter = componentNormalGraph.size();
   Translation addedTranslation;
 
   for (const auto& connection : conns) {
-    const Point from = translateAdded(connection.first,  placeTrans, lookup, addedTranslation, counter);
-    const Point to   = translateAdded(connection.second, placeTrans, lookup, addedTranslation, counter);
+    const auto [from, fromCreated] = translateAdded(connection.first,  placeTrans, lookup, addedTranslation, counter);
+    const auto [to, toCreated]   = translateAdded(connection.second, placeTrans, lookup, addedTranslation, counter);
+
+    if (fromCreated || toCreated) {
+      addedNormal.push_back(std::vector<Point>());
+      addedInverse.push_back(std::vector<Point>());
+    }
+    if (fromCreated && toCreated) {
+      addedNormal.push_back(std::vector<Point>());
+      addedInverse.push_back(std::vector<Point>());
+    }
 
     addedNormal[from].push_back(to);
     addedInverse[to].push_back(from);
@@ -252,11 +261,16 @@ unsigned TrafficNetworkTester::count_areas(const std::vector<Connection> &conns)
   return solvedGraph.size();
 }
 
+
+
+
+
 #ifndef __PROGTEST__
 
 using Test = std::pair<Map, std::vector<std::pair<unsigned, std::vector<Connection>>>>;
 
 Test TESTS[] = {
+  // 1..5
   {
     { { "Dejvicka", "Hradcanska", "Malostranska", "Staromestska", "Mustek", "Muzeum" }, { // Map
                                                                                           { "Dejvicka", "Hradcanska" }, { "Hradcanska", "Malostranska" },
@@ -266,10 +280,11 @@ Test TESTS[] = {
                                                                                           { 4, { { "Mustek", "Malostranska" } } },
                                                                                           { 4, { { "Malostranska", "Letnany" }, { "Letnany", "Dejvicka" } } },
                                                                                           { 1, { { "Malostranska", "Letnany" }, { "Letnany", "Dejvicka" }, { "Muzeum", "Hradcanska" } } },
-                                                                                          { 1, { { "Muzeum", "Dejvicka" } } },
+                                                                                          { 1, { { "Muzeum", "Dejvicka" } }},
                                                                                           { 6, { { "Dejvicka", "Muzeum" } } },
                                                                                         }
   },
+  // 6..11
   {
     { { 
         "Na Sklonku", "Poliklinika Čumpelíkova", "Šumavská", "Nové Podolí", "Vozovna Střešovice (Muzeum MHD)",
@@ -314,6 +329,7 @@ Test TESTS[] = {
                } },
       }
   },
+  // 12..17
   {
     { { 
         "U Vojenské nemocnice", "Kuchyňka", "V Korytech", "Kelerka", "Vozovna Strašnice",
@@ -327,7 +343,7 @@ Test TESTS[] = {
         { "K Netlukám", "Praha-Smíchov" }, { "V Korytech", "Geologická" },
         { "V Korytech", "Vozovna Strašnice" }, { "Vozovna Strašnice", "V Korytech" },
         { "U Vojenské nemocnice", "Kuchyňka" }, { "Kelerka", "Geologická" },
-        { "Praha-Bubny", "Strossmayerovo náměstí" }, { "Kuchyňka", "V Korytech" },
+        { "Praha-Bubny", "Strossmayerovo náměstí" }, {"Kuchyňka", "V Korytech"},
         { "Praha-Smíchov", "Praha-Bubny" }, { "Obchodní centrum Sárská", "Moráň" },
         { "Kelerka", "V Korytech" }, { "Kelerka", "V Korytech" },
         { "Hadovka", "Rajská zahrada" }, { "V Korytech", "Geologická" },
@@ -374,6 +390,7 @@ Test TESTS[] = {
                } },
       }
   },
+  // 18..20
   {
     { { 
         "Na Lukách", "Plánická", "U Mezníku", "Bílá Hora", "Psohlavců",
@@ -424,16 +441,31 @@ Test TESTS[] = {
 };
 
 template < typename C >
-void test(C&& tests, bool exact) {
+void test(C&& tests, int specific = -1) {
+  int cnt = 1;
   int fail = 0, ok = 0;
 
   for (auto&& [ map, test_cases ] : tests) {
-    TrafficNetworkTester T{map};
-    for (auto&& [ ans, conns ] : test_cases)
-      if (exact)
-        (ans == T.count_areas(conns) ? ok : fail)++;
-      else
-        ((ans == 1) == (T.count_areas(conns) == 1) ? ok : fail)++;
+    for (auto&& [ ans, conns ] : test_cases) {
+      if (specific != -1 && specific != cnt) {
+        printf("(%2d) Skipped\n", cnt);
+        ++cnt;
+        continue;
+      }
+
+      TrafficNetworkTester T{map};
+      const size_t areas = T.count_areas(conns);
+
+      if (ans == areas) {
+        printf("(%2d) Pass\n", cnt);
+        ok++;
+      } else {
+        printf("(%2d) Failed: exp %u, got %lu\n", cnt, ans, areas);
+        fail++;
+      }
+
+      ++cnt;
+    }
   }
 
   if (fail)
@@ -443,8 +475,8 @@ void test(C&& tests, bool exact) {
 }
 
 int main() {
-  test(TESTS, false);
-  test(TESTS, true);
+  test(TESTS, 12);
+  test(TESTS);
 }
 
 #endif
