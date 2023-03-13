@@ -68,12 +68,10 @@ void dumpGraph(const Graph& graph, char name) {
   }
 }
 
-
-template<bool useTwo>
-std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, const Graph& addedNormal = Graph(), const Graph& addedInverse = Graph()) {
+std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inverse) {
 
   // total number of places
-  const size_t items = useTwo ? addedNormal.size() : normal.size();
+  const size_t items = normal.size();
 
   // the stack used to reconstruct condensations
   std::vector<Point> leftStack; leftStack.reserve(items);
@@ -86,23 +84,13 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
     std::vector<bool> opened(items);
 
 
-    // common enqueue operation
-    const auto enqueue = [&dfsStack, &opened](Point point) {
-      if (opened[point]) {
-        return false;
-      }
-
-      dfsStack.push_back({point, true});
-      return true;
-    };
-
-
     // iterate over all the vertexes
     for (Point start = 0; start < items; ++start) {
       // skip already processed items
-      if (!enqueue(start)) {
+      if (opened[start]) {
           continue;
       }
+      dfsStack.push_back({start, true});
 
       // DFS impl
       while(!dfsStack.empty()) {
@@ -127,17 +115,12 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
         dfsStack.push_back({point, false});
 
         // add normal neighbours
-        if (!useTwo || inverse.size() > point) {
-          for (const Point& neighbour : inverse[point]) {
-            enqueue(neighbour);
+        for (const Point& neighbour : inverse[point]) {
+          if (opened[neighbour]) {
+            continue;
           }
-        }
 
-        // add added neighbours
-        if constexpr (useTwo) {
-          for (const Point& neighbour : addedInverse[point]) {
-            enqueue(neighbour);
-          }
+          dfsStack.push_back({neighbour, true});
         }
       }
     }
@@ -157,18 +140,6 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
     Point componentIdCounter = 0;
     std::vector<Point> dfsStack; dfsStack.reserve(items / 2);
 
-    // shared enqueue logic
-    const auto enqueue = [&componentGraph, &dfsStack, &lookup](Point point, Point componentId) {
-      if (lookup[point] != DUMMY) {
-        // if (lookup[point] != componentId) {
-        componentGraph[componentId].push_back(lookup[point]);
-        // }
-        return;
-      }
-
-      dfsStack.push_back(point);
-    };
-
 
     // iterate trough the stack
     for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
@@ -185,7 +156,7 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
       componentGraph.push_back(std::vector<Point>());
 
       // prepare DFS start
-      enqueue(stackBack, componentId);
+      dfsStack.push_back(stackBack);
 
       while(!dfsStack.empty()) {
 
@@ -202,24 +173,158 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
         lookup[point] = componentId;
 
         // add normal connections
-        if (!useTwo || normal.size() > point) {
-          for (const Point& neighbour : normal[point]) {
-            enqueue(neighbour, componentId);
+        for (const Point& neighbour : normal[point]) {
+          if (lookup[neighbour] != DUMMY) {
+            // if (lookup[neighbour] != componentId) {
+            componentGraph[componentId].push_back(lookup[neighbour]);
+            // }
+          }
+          dfsStack.push_back(neighbour);
+        }
+      }
+    }
+  }
+
+  return {std::move(componentGraph), std::move(lookup)};
+}
+
+
+Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph& addedNormal, const Graph& addedInverse) {
+
+  // total number of places
+  const size_t items = addedNormal.size();
+
+  // the stack used to reconstruct condensations
+  std::vector<Point> leftStack; leftStack.reserve(items);
+
+
+  // inverse tracking - create stack
+  {
+    // point - is open
+    std::vector<std::pair<Point, bool>> dfsStack; dfsStack.reserve(items / 2);
+    std::vector<bool> opened(items);
+
+
+    // iterate over all the vertexes
+    for (Point start = 0; start < items; ++start) {
+      // skip already processed items
+      if (opened[start]) {
+          continue;
+      }
+
+      dfsStack.push_back({start, true});
+
+      // DFS impl
+      while(!dfsStack.empty()) {
+
+        const auto [point, opening] = dfsStack.back();
+        dfsStack.pop_back();
+
+        // record vertex closing
+        if (!opening) {
+          leftStack.push_back(point);
+          continue;
+        }
+
+        // vertex already opened check
+        if (opened[point]) {
+          continue;
+        }
+
+        // opens the vertex
+        opened[point] = true;
+        // push close point record
+        dfsStack.push_back({point, false});
+
+        // add normal neighbours
+        if (inverse.size() > point) {
+          for (const Point& neighbour : inverse[point]) {
+            if (opened[neighbour]) {
+              continue;
+            }
+
+            dfsStack.push_back({neighbour, true});
           }
         }
 
-        // add additional connection
-        if constexpr (useTwo) {
-          for (const Point& neighbour : addedNormal[point]) {
-            enqueue(neighbour, componentId);
+        // add added neighbours
+        for (const Point& neighbour : addedInverse[point]) {
+          if (opened[neighbour]) {
+            continue;
           }
+
+          dfsStack.push_back({neighbour, true});
         }
       }
     }
   }
 
 
-  return {std::move(componentGraph), std::move(lookup)};
+
+  // renames vertexes to their component name
+  std::vector<bool> opened(items);
+  // Connects the components
+  Graph componentGraph;
+
+  // components finding
+  {
+    std::vector<Point> dfsStack; dfsStack.reserve(items / 2);
+
+    // iterate trough the stack
+    for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
+
+      const Point stackBack = *itr;
+
+      // check if the vertex was already checked
+      if (opened[stackBack]) {
+        continue;
+      }
+
+      // creates a new component
+      componentGraph.push_back(std::vector<Point>());
+
+      // prepare DFS start
+      dfsStack.push_back(stackBack);
+
+      while(!dfsStack.empty()) {
+
+        // pop item
+        const Point point = dfsStack.back();
+        dfsStack.pop_back();
+
+        // check if already processed
+        if (opened[point]) {
+          continue;
+        }
+
+        // move to a component
+        opened[point] = true;
+
+        // add normal connections
+        if (normal.size() > point) {
+          for (const Point& neighbour : normal[point]) {
+            if (opened[neighbour]) {
+              continue;
+            }
+
+            dfsStack.push_back(neighbour);
+          }
+        }
+
+        // add additional connection
+        for (const Point& neighbour : addedNormal[point]) {
+          if (opened[neighbour]) {
+            continue;
+          }
+
+          dfsStack.push_back(neighbour);
+        }
+      }
+    }
+  }
+
+
+  return componentGraph;
 }
 
 
@@ -243,7 +348,7 @@ TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
   }
 
   // compose normal graph and lookup table
-  auto [solvedGraph, solvedLookup] = solveGraph<false>(normalGraph, inverseGraph);
+  auto [solvedGraph, solvedLookup] = solveGraphSimple(normalGraph, inverseGraph);
   componentNormalGraph = std::move(solvedGraph);
   lookup = std::move(solvedLookup);
 
@@ -286,11 +391,11 @@ unsigned TrafficNetworkTester::count_areas(const std::vector<Connection> &conns)
     const auto [from, fromCreated] = translateAdded(connection.first,  placeTrans, lookup, addedTranslation, counter);
     const auto [to, toCreated]   = translateAdded(connection.second, placeTrans, lookup, addedTranslation, counter);
 
-    if (fromCreated || toCreated) {
+    if (fromCreated) {
       addedNormal.push_back(std::vector<Point>());
       addedInverse.push_back(std::vector<Point>());
     }
-    if (fromCreated && toCreated) {
+    if (toCreated) {
       addedNormal.push_back(std::vector<Point>());
       addedInverse.push_back(std::vector<Point>());
     }
@@ -299,7 +404,7 @@ unsigned TrafficNetworkTester::count_areas(const std::vector<Connection> &conns)
     addedInverse[to].push_back(from);
   }
 
-  auto [solvedGraph, _] = solveGraph<true>(componentNormalGraph, componentInverseGraph, addedNormal, addedInverse);
+  const Graph solvedGraph = solveGraphAdvanced(componentNormalGraph, componentInverseGraph, addedNormal, addedInverse);
   
   return solvedGraph.size();
 }
