@@ -1,3 +1,5 @@
+#include <iterator>
+#include <ostream>
 #ifndef __PROGTEST__
 #include <cassert>
 #include <cstdint>
@@ -62,7 +64,13 @@ struct TrafficNetworkTester {
 
 
 
-
+void dumpGraph(const Graph& graph, char name) {
+  for (int i = 0; i < graph.size(); ++i) {
+    for (const auto& children : graph[i]) {
+      std::cout << name << i << " -> " << name << children << ";" << std::endl;
+    }
+  }
+}
 
 
 template<bool useTwo>
@@ -73,19 +81,17 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
 
   // inverse tracking
   {
-    std::vector<Point> dfsStack; dfsStack.reserve(items / 2);
-    std::vector<Point> returnStack; returnStack.reserve(items / 2);
-    std::vector<bool> visited(items);
+    // point - is open
+    std::vector<std::pair<Point, bool>> dfsStack; dfsStack.reserve(items / 2);
+    std::vector<bool> opened(items), closed(items);
 
-    const auto enqueue = [&dfsStack, &returnStack, &visited](Point point) {
-      if (visited[point]) {
+
+    const auto enqueue = [&dfsStack, &opened, &closed](Point point) {
+      if (opened[point]) {
         return false;
       }
 
-      visited[point] = true;
-      dfsStack.push_back(point);
-      returnStack.push_back(point);
-
+      dfsStack.push_back({point, true});
       return true;
     };
 
@@ -96,35 +102,50 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
       }
 
       while(!dfsStack.empty()) {
-        const Point point = dfsStack.back();
+        const auto [point, opening] = dfsStack.back();
         dfsStack.pop_back();
 
-        bool anyAdded = false;
+        if (!opening) {
+          leftStack.push_back(point);
+          closed[point] = true;
+          std::cout << "Close: " << point << std::endl;
+          continue;
+        }
+
+        if (opened[point]) {
+          continue;
+        }
+
+        std::cout << "Open:  " << point << std::endl;
+        opened[point] = true;
+        dfsStack.push_back({point, false});
 
         if (!useTwo || inverse.size() > point) {
           for (const Point& neighbour : inverse[point]) {
-            anyAdded |= enqueue(neighbour);
+            std::cout << "Try:   " << neighbour << std::endl;
+            enqueue(neighbour);
           }
         }
 
         if constexpr (useTwo) {
           for (const Point& neighbour : addedInverse[point]) {
-            anyAdded |= enqueue(neighbour);
+            enqueue(neighbour);
           }
-        }
-
-        if (!anyAdded) {
-          do {
-            const Point point = returnStack.back();
-            returnStack.pop_back();
-            leftStack.push_back(point);
-          } while (!returnStack.empty() && (dfsStack.empty() || returnStack.back() != dfsStack.back()));
         }
       }
     }
   }
 
-
+  // TODO remove
+  dumpGraph(normal, 'a');
+  std::cout << std::endl;
+  dumpGraph(inverse, 'i');
+  std::cout << "// [";
+  // for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
+  for (auto itr = leftStack.begin(); itr != leftStack.end(); ++itr) {
+    std::cout << *itr << ", ";
+  }
+  std::cout << "]" << std::endl;
 
   const Point DUMMY = (Point) -1;
   Lookup lookup(items, DUMMY);
@@ -133,33 +154,49 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
   // components finding
   {
     Point componentIdCounter = 0;
-    std::vector<Point> dfsStack; dfsStack.reserve(items / 2);
+    std::vector<std::pair<Point, bool>> dfsStack; dfsStack.reserve(items / 2);
+    std::vector<bool> closed(items);
 
     const auto enqueue = [&componentGraph, &dfsStack, &lookup](Point point, Point componentId) {
       if (lookup[point] != DUMMY) {
-        componentGraph[componentId].push_back(lookup[point]);
-      } else {
-        lookup[point] = componentId;
-        dfsStack.push_back(point);
+        if (lookup[point] != componentId) {
+          componentGraph[componentId].push_back(lookup[point]);
+        }
+        return;
       }
+
+      dfsStack.push_back({point, true});
     };
 
-    for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
-      const Point toProcess = *itr;
 
-      if (lookup[toProcess] != DUMMY) {
+
+    for (auto itr = leftStack.rbegin(); itr != leftStack.rend(); ++itr) {
+      const Point stackBack = *itr;
+
+      if (lookup[stackBack] != DUMMY) {
         continue;
       }
 
       const Point componentId = componentIdCounter++;
       componentGraph.push_back(std::vector<Point>());
 
-      lookup[toProcess] = componentId;
-      dfsStack.push_back(toProcess);
+      dfsStack.push_back({stackBack, true});
 
       while(!dfsStack.empty()) {
-        const Point point = dfsStack.back();
+
+        const auto [point, opened] = dfsStack.back();
         dfsStack.pop_back();
+
+        if (!opened) {
+          closed[point] = true;
+          continue;
+        }
+
+        if (lookup[point] != DUMMY) {
+          continue;
+        }
+
+        lookup[point] = componentId;
 
         if (!useTwo || normal.size() > point) {
           for (const Point& neighbour : normal[point]) {
@@ -174,6 +211,12 @@ std::pair<Graph, Lookup> solveGraph(const Graph& normal, const Graph& inverse, c
         }
       }
     }
+  }
+
+  // TODO remove
+  dumpGraph(componentGraph, 'b');
+  for (int i = 0; i < lookup.size(); i++) {
+    std::cout << "// " << i << " -> " << lookup[i] << std::endl;
   }
 
   return {std::move(componentGraph), std::move(lookup)};
