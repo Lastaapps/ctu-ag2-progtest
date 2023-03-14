@@ -90,7 +90,7 @@ std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inve
       if (opened[start]) {
           continue;
       }
-      dfsStack.push_back({start, true});
+      dfsStack.emplace_back(std::make_pair(start, true));
 
       // DFS impl
       while(!dfsStack.empty()) {
@@ -100,7 +100,7 @@ std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inve
 
         // record vertex closing
         if (!opening) {
-          leftStack.push_back(point);
+          leftStack.emplace_back(point);
           continue;
         }
 
@@ -112,7 +112,7 @@ std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inve
         // opens the vertex
         opened[point] = true;
         // push close point record
-        dfsStack.push_back({point, false});
+        dfsStack.emplace_back(std::make_pair(point, false));
 
         // add normal neighbours
         for (const Point& neighbour : inverse[point]) {
@@ -120,7 +120,7 @@ std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inve
             continue;
           }
 
-          dfsStack.push_back({neighbour, true});
+          dfsStack.emplace_back(std::make_pair(neighbour, true));
         }
       }
     }
@@ -153,10 +153,10 @@ std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inve
 
       // creates a new component
       const Point componentId = componentIdCounter++;
-      componentGraph.push_back(std::vector<Point>());
+      componentGraph.emplace_back(std::vector<Point>());
 
       // prepare DFS start
-      dfsStack.push_back(stackBack);
+      dfsStack.emplace_back(stackBack);
 
       while(!dfsStack.empty()) {
 
@@ -175,11 +175,12 @@ std::pair<Graph, Lookup> solveGraphSimple(const Graph& normal, const Graph& inve
         // add normal connections
         for (const Point& neighbour : normal[point]) {
           if (lookup[neighbour] != DUMMY) {
-            // if (lookup[neighbour] != componentId) {
-            componentGraph[componentId].push_back(lookup[neighbour]);
-            // }
+            if (lookup[neighbour] != componentId) {
+              componentGraph[componentId].emplace_back(lookup[neighbour]);
+            }
+            continue;
           }
-          dfsStack.push_back(neighbour);
+          dfsStack.emplace_back(neighbour);
         }
       }
     }
@@ -212,7 +213,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
           continue;
       }
 
-      dfsStack.push_back({start, true});
+      dfsStack.emplace_back(std::make_pair(start, true));
 
       // DFS impl
       while(!dfsStack.empty()) {
@@ -222,7 +223,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
 
         // record vertex closing
         if (!opening) {
-          leftStack.push_back(point);
+          leftStack.emplace_back(point);
           continue;
         }
 
@@ -234,7 +235,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
         // opens the vertex
         opened[point] = true;
         // push close point record
-        dfsStack.push_back({point, false});
+        dfsStack.emplace_back(std::make_pair(point, false));
 
         // add normal neighbours
         if (inverse.size() > point) {
@@ -243,7 +244,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
               continue;
             }
 
-            dfsStack.push_back({neighbour, true});
+            dfsStack.emplace_back(std::make_pair(neighbour, true));
           }
         }
 
@@ -253,7 +254,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
             continue;
           }
 
-          dfsStack.push_back({neighbour, true});
+          dfsStack.emplace_back(std::make_pair(neighbour, true));
         }
       }
     }
@@ -281,10 +282,10 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
       }
 
       // creates a new component
-      componentGraph.push_back(std::vector<Point>());
+      componentGraph.emplace_back(std::vector<Point>());
 
       // prepare DFS start
-      dfsStack.push_back(stackBack);
+      dfsStack.emplace_back(stackBack);
 
       while(!dfsStack.empty()) {
 
@@ -307,7 +308,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
               continue;
             }
 
-            dfsStack.push_back(neighbour);
+            dfsStack.emplace_back(neighbour);
           }
         }
 
@@ -317,7 +318,7 @@ Graph solveGraphAdvanced(const Graph& normal, const Graph& inverse, const Graph&
             continue;
           }
 
-          dfsStack.push_back(neighbour);
+          dfsStack.emplace_back(neighbour);
         }
       }
     }
@@ -343,8 +344,8 @@ TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
   for (const auto& connection : map.connections) {
     const Point nameFrom = placeTrans[connection.first];
     const Point nameTo   = placeTrans[connection.second];
-    normalGraph[nameFrom].push_back(nameTo);
-    inverseGraph[nameTo].push_back(nameFrom);
+    normalGraph[nameFrom].emplace_back(nameTo);
+    inverseGraph[nameTo].emplace_back(nameFrom);
   }
 
   // compose normal graph and lookup table
@@ -356,7 +357,7 @@ TrafficNetworkTester::TrafficNetworkTester(const Map& map) {
   componentInverseGraph = Graph(componentNormalGraph.size());
   for (Point component = 0; component < componentNormalGraph.size(); ++component) {
     for(const Point& target : componentNormalGraph[component]) {
-      componentInverseGraph[target].push_back(component);
+      componentInverseGraph[target].emplace_back(component);
     }
   }
 }
@@ -370,7 +371,6 @@ std::pair<Point, bool> translateAdded(const Place& place, const Translation& mai
     }
   }
   {
-
     const auto itr = added.find(place);
     if (itr != added.end()) {
       return {itr -> second, false};
@@ -392,16 +392,16 @@ unsigned TrafficNetworkTester::count_areas(const std::vector<Connection> &conns)
     const auto [to, toCreated]   = translateAdded(connection.second, placeTrans, lookup, addedTranslation, counter);
 
     if (fromCreated) {
-      addedNormal.push_back(std::vector<Point>());
-      addedInverse.push_back(std::vector<Point>());
+      addedNormal.emplace_back(std::vector<Point>());
+      addedInverse.emplace_back(std::vector<Point>());
     }
     if (toCreated) {
-      addedNormal.push_back(std::vector<Point>());
-      addedInverse.push_back(std::vector<Point>());
+      addedNormal.emplace_back(std::vector<Point>());
+      addedInverse.emplace_back(std::vector<Point>());
     }
 
-    addedNormal[from].push_back(to);
-    addedInverse[to].push_back(from);
+    addedNormal[from].emplace_back(to);
+    addedInverse[to].emplace_back(from);
   }
 
   const Graph solvedGraph = solveGraphAdvanced(componentNormalGraph, componentInverseGraph, addedNormal, addedInverse);
