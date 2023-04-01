@@ -42,7 +42,260 @@ struct Map {
 
 #endif
 
-std::pair<Capacity, std::set<Place>> critical_streets(const Map& map);
+/**
+ * TODO
+ * map names
+ * Dinitz
+ * Gomory–Hu tree
+ */
+
+// --- Preprocessing ----------------------------------------------------------
+using Point = uint32_t;
+// translates places to int
+using PlaceToPoint = std::unordered_map<Place, Point>;
+
+using Edges = std::vector<std::vector<Point>>;
+struct Flow {
+  private:
+    size_t cnt;
+    std::vector<Capacity> flow;
+  public:
+    Flow(size_t cnt) : cnt(cnt), flow(cnt * cnt) {}
+
+    Capacity& at(Point from, Point to) {
+      if (from > to) std::swap(to, from);
+      return flow[from * cnt + to];
+    }
+
+    const Capacity& at(Point from, Point to) const {
+      if (from > to) std::swap(to, from);
+      return flow[from * cnt + to];
+    }
+};
+
+struct Graph {
+  Edges edges;
+  Flow capacities;
+};
+
+void addToVector(std::vector<Point>& v, const Point to) {
+  auto itr = std::lower_bound(v.begin(), v.end(), to);
+  if (*itr == to) return;
+  v.insert(itr, to);
+}
+
+Graph preprocess(const Map& map) {
+  const size_t nodeCnt = map.places.size();
+
+  PlaceToPoint toPoint;
+  toPoint.reserve(nodeCnt);
+
+  for (Point id = 0; id < map.places.size(); ++id) {
+    const auto& place = map.places[id];
+    toPoint.insert({place, id});
+  }
+
+  Edges edges(nodeCnt);
+  Flow  capacities(nodeCnt);
+
+  for (const auto& [fromPlace, toPlace, cap]: map.connections) {
+    const Point from = toPoint[fromPlace];
+    const Point to   = toPoint[toPlace];
+
+    if (from == to) continue;
+    
+    addToVector(edges[from], to);
+    addToVector(edges[to], from);
+    capacities.at(from, to) += cap;
+  }
+
+  return {std::move(edges), std::move(capacities)};
+}
+
+/**
+ * @return new flow added, 0 if path was not found
+ */
+Capacity saturateShortesPath(Edges& graph, Flow& reserves, const Point end, Point point, Capacity minReserve) {
+  if (end == point) {
+    return minReserve;
+  }
+
+  auto& edges = graph[point];
+  while(!edges.empty()) {
+    const Point target = edges.back();
+    const Capacity mReserve = reserves.at(point, target);
+    if (mReserve == 0) {
+      edges.pop_back();
+      continue;
+    }
+
+    const Capacity res = saturateShortesPath(graph, reserves, end, target, std::min(mReserve, minReserve));
+
+    // no path found
+    if (res == 0) {
+      edges.pop_back();
+      continue;
+    }
+
+    reserves.at(point, target) -= res;
+
+    // edge not fully saturated
+    return res;
+  }
+  return 0;
+};
+
+
+Flow dinitz(const Graph& graph, const Point from, const Point to) {
+
+  const auto& [graphEdges, capacities] = graph;
+  const size_t nodeCnt = graphEdges.size();
+
+  // build flow
+  Flow reserves = capacities;
+
+  while(true) {
+    std::vector<uint32_t> levels(nodeCnt);
+    std::vector<Point> toClean;
+    Edges dinitzGraph(nodeCnt);
+    bool targetFound = false;
+
+    // BFS
+    {
+      std::queue<Point> queue;
+      queue.emplace(from);
+      levels[from] = 1;
+
+      while (!queue.empty()) {
+        Point point = queue.front();
+        queue.pop();
+
+        if (point == to) {
+          targetFound = true;
+          break;
+        }
+
+        uint32_t nextLevel = levels[point] + 1;
+
+        const auto& edges = graphEdges[point];
+
+        for (size_t i = 0; i < edges.size(); ++i) {
+          const Point target = edges[i];
+
+          if (levels[target] != 0) {
+            continue;
+          }
+          const Capacity reserve = reserves.at(point, target);
+          if (reserve == 0) {
+            continue;
+          }
+
+          queue.emplace(target);
+          levels[target] = nextLevel;
+          dinitzGraph[point].emplace_back(target);
+        }
+
+        if (dinitzGraph[point].size() == 0) {
+          toClean.push_back(point);
+        }
+      }
+
+      if (targetFound == false) {
+        return reserves;
+        break;
+      }
+    }
+
+    // Dinitz cleaning
+    while (!toClean.empty()) {
+      const Point point = toClean.back();
+      toClean.pop_back();
+
+      const uint32_t level = levels[point];
+      for (const auto& target : graphEdges[point]) {
+        if (levels[target] == level - 1) {
+
+          auto& tEdges = dinitzGraph[target];
+          auto itr = std::find(tEdges.begin(), tEdges.end(), point);
+          tEdges.erase(itr);
+
+          if (tEdges.size() == 0) {
+            toClean.push_back(target);
+          }
+        }
+      }
+    }
+
+    // Finding shortest path
+    while(true) {
+      if (saturateShortesPath(dinitzGraph, reserves, from, to, (Capacity) -1) == 0) {
+        break;
+      }
+    }
+  }
+}
+
+template<bool buildSet>
+std::pair<Capacity, std::set<Place>> countReachable(const Map& map, const Graph& graph, const Flow& reserves, Point from) {
+  const size_t nodeCnt = map.places.size();
+  Capacity counter = 0;
+  std::set<Place> places;
+
+  std::queue<Point> queue;
+  std::vector<bool> visited(nodeCnt);
+  queue.push(from);
+  visited[from] = true;
+
+  while(!queue.empty()) {
+    const Point point = queue.front();
+    queue.pop();
+
+    if constexpr (buildSet) {
+      places.insert(map.places[point]);
+    }
+
+    for(const auto& target : graph.edges[point]) {
+      if (visited[target]) {
+        continue;
+      }
+      if (reserves.at(point, target) == 0) {
+        counter += graph.capacities.at(point, target);
+        continue;
+      }
+      visited[target] = true;
+      queue.push(target);
+    }
+  }
+
+  return {counter, std::move(places)};
+}
+
+std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
+  const size_t nodeCnt = map.places.size();
+  if (nodeCnt <= 1) {
+    return {0, std::set<Place>(map.places.begin(), map.places.end())};
+  }
+
+  const Graph graph = preprocess(map);
+
+  Point minFrom = 0;
+  Point minTo   = 0;
+  Point minPeople = (Point) -1;
+
+  for (Point from = 0; from < nodeCnt; ++from) {
+    for (Point to = from + 1; to < nodeCnt; ++to) {
+      const Flow reserves = dinitz(graph, from, to);
+      auto [cnt, _] = countReachable<false>(map, graph, reserves, from);
+      if (cnt < minPeople) {
+        minFrom = from;
+        minTo = to;
+      }
+    }
+  }
+
+  const Flow reserves = dinitz(graph, minFrom, minTo);
+  return countReachable<true>(map, graph, reserves, minFrom);
+}
 
 #ifndef __PROGTEST__
 
