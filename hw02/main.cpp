@@ -76,6 +76,7 @@ class Flow {
     void sendFlow(Point u, Point v, Capacity f) {
       const size_t forward  = toIndex(u, v);
       const size_t backward = toIndex(v, u);
+      // printf("Sending for %2u %2u of %2u ", u, v, f);
 
       if (flow[backward] <= f) {
         f -= flow[backward];
@@ -86,12 +87,16 @@ class Flow {
       }
 
       flow[forward] += f;
+
+      // printf("(%2u, %2u)\n", flow[forward], flow[backward]);
     }
 
     Capacity getReserve(Point u, Point v) const {
       const size_t forward  = toIndex(u, v);
       const size_t backward = toIndex(v, u);
-      return capacities[forward] - flow[forward] + flow[backward];
+      const size_t reserve  = capacities[forward] - flow[forward] + flow[backward];
+      // printf("Reserve for %u %u is %2lu (%2u - %2u + %2u)\n", u, v, reserve, capacities[forward], flow[forward], flow[backward]);
+      return reserve;
     }
 
     void resetFlow() {
@@ -123,6 +128,16 @@ void eraseItem(std::vector<Point>& v, const Point item) {
   auto itr = std::find(v.begin(), v.end(), item);
   if (itr != v.end()) {
     v.erase(itr);
+  }
+}
+
+void printGraph(const Graph& graph) {
+  for (size_t i = 0; i < graph.size(); ++i) {
+    printf("%2lu ->", i);
+    for (const Point p : graph[i]) {
+      printf(" %u", p);
+    }
+    printf("\n");
   }
 }
 
@@ -166,6 +181,8 @@ struct Dfs {
    * @return new flow added, 0 if path was not found
    */
   Capacity saturateShortesPath(const Point end, const Point u, Capacity currReserve) {
+    // printf("DFS Processing %u\n", u);
+
     if (end == u) {
       return currReserve;
     }
@@ -180,6 +197,7 @@ struct Dfs {
         continue;
       }
 
+      // printf("DFS From %u to %u\n", u, v);
       const Capacity minReserve = saturateShortesPath(end, v, std::min(localReserve, currReserve));
 
       // no path found - should not happen
@@ -235,7 +253,9 @@ void dinitz(Network& network, const Point from, const Point to) {
   const size_t nodeCnt = graph.size();
   flow.resetFlow();
 
+  // printf("Dinitz\n");
   while(true) {
+    // printf("Iteration\n");
     std::vector<uint32_t> levels(nodeCnt);
     std::vector<Point> toClean;
     Graph dinitzGraph(nodeCnt);
@@ -250,6 +270,8 @@ void dinitz(Network& network, const Point from, const Point to) {
       while (!queue.empty()) {
         Point u = queue.front();
         queue.pop();
+
+        // printf("Poping\n");
 
         if (u == to) {
           targetFound = true;
@@ -287,13 +309,17 @@ void dinitz(Network& network, const Point from, const Point to) {
       }
     }
 
+    // printf("Got Dinitz graph:\n");
+    // printGraph(dinitzGraph);
 
     // Finding shortest path
     Dfs dfs(dinitzGraph, flow, toClean);
     while(true) {
-      cleanGraph(levels, toClean, graph, dinitzGraph);
 
-      if (dfs.saturateShortesPath(from, to, (Capacity) -1) == 0) {
+        // printf("Filling\n");
+        cleanGraph(levels, toClean, graph, dinitzGraph);
+
+      if (dfs.saturateShortesPath(to, from, (Capacity) -1) == 0) {
         break;
       }
     }
@@ -341,18 +367,24 @@ std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
 
   Network network = preprocess(map);
 
+  // printf("Parsed graph:\n");
+  // printGraph(network.graph);
+
   Point minFrom = 0;
   Point minTo   = 0;
   Point minPeople = (Point) -1;
 
   for (Point from = 0; from < nodeCnt; ++from) {
     for (Point to = from + 1; to < nodeCnt; ++to) {
+      // printf("Running dinitz %d - %d\n", from, to);
       dinitz(network, from, to);
       Capacity cnt = network.flow.amount(network.graph, from);
       if (cnt < minPeople) {
+        minPeople = cnt;
         minFrom = from;
         minTo = to;
       }
+      // printf("Result for %d - %d is %d\n\n\n", from, to, cnt);
     }
   }
 
@@ -465,16 +497,27 @@ std::array TESTS = {
   }}},
 };
 
+void printAnswer(Capacity c, std::set<Place> places) {
+  std::cout << "Res is: " << c << std::endl;
+  for (const auto& place : places) {
+    std::cout << place << " ";
+  }
+  std::cout << "\n\n\n" << std::endl;
+}
+
 template < typename C >
 void test(C&& tests) {
-  int fail = 0, ok = 0;
+  int fail = 0, ok = 0, cnt = 1;
 
   for (auto&& [ ref_s, map ] : tests) {
-    auto [ s, _ ] = critical_streets(map);
-    if (s == ref_s) ok++;
-    else {
+    auto [ s, places ] = critical_streets(map);
+    printAnswer(s, places);
+    if (s == ref_s) {
+      ok++;
+      std::cout << "Test[" << cnt++ << "] PASSED" << std::endl;
+    } else {
       fail++;
-      std::cout << "Got " << s << " but expected " << ref_s << std::endl;
+      std::cout << "Test[" << cnt++ << "] FAILED Got " << s << " but expected " << ref_s << std::endl;
     }
   }
 
