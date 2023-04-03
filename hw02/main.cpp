@@ -359,6 +359,73 @@ std::set<Place> findReachable(const Map& map, const Network& network, Point from
   return places;
 }
 
+void fordFulkersonUpdateRoute(Network& network, const std::vector<Point>& parents, const Point from, const Point to) {
+  Capacity minReserve = (Capacity) -1;
+  {
+    Point v = to;
+    while(v != from) {
+      const Point u = parents[v] - 1;
+      minReserve = std::min(minReserve, network.flow.getReserve(u, v));
+      v = u;
+    }
+  }
+  {
+    Point v = to;
+    while(v != from) {
+      const Point u = parents[v] - 1;
+      network.flow.sendFlow(u, v, minReserve);
+      v = u;
+    }
+  }
+}
+
+void fordFulkerson(Network& network, const Point from, const Point to) {
+
+  network.flow.resetFlow();
+
+  while(true) {
+    std::vector<Point> parents(network.graph.size());
+    std::queue<Point> queue;
+    bool targetFound = false;
+
+    queue.push(from);
+    parents[from] = (Point) (-1 - 1);
+
+    while(!queue.empty()) {
+      const Point u = queue.front();
+      queue.pop();
+
+      for (const Point v : network.graph[u]) {
+        if (parents[v] != 0) {
+          continue;
+        }
+
+        const Capacity reserve = network.flow.getReserve(u, v);
+        if (reserve == 0) {
+          continue;
+        }
+
+        queue.push(v);
+        parents[v] = u + 1;
+
+        if (v == to) {
+          fordFulkersonUpdateRoute(network, parents, from, to);
+          targetFound = true;
+          break;
+        }
+
+        if (targetFound == true) {
+          break;
+        }
+      }
+    }
+
+    if (targetFound == false) {
+      break;
+    }
+  }
+}
+
 std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
   const size_t nodeCnt = map.places.size();
   if (nodeCnt <= 1) {
@@ -374,10 +441,11 @@ std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
   Point minTo   = 0;
   Point minPeople = (Point) -1;
 
-  for (Point from = 0; from < nodeCnt; ++from) {
+  Point from = 0;
+  // for (Point from = 0; from < nodeCnt; ++from) {
     for (Point to = from + 1; to < nodeCnt; ++to) {
       // printf("Running dinitz %d - %d\n", from, to);
-      dinitz(network, from, to);
+      fordFulkerson(network, from, to);
       Capacity cnt = network.flow.amount(network.graph, from);
       if (cnt < minPeople) {
         minPeople = cnt;
@@ -386,9 +454,9 @@ std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
       }
       // printf("Result for %d - %d is %d\n\n\n", from, to, cnt);
     }
-  }
+  // }
 
-  dinitz(network, minFrom, minTo);
+  fordFulkerson(network, minFrom, minTo);
   return {network.flow.amount(network.graph, minFrom), findReachable(map, network, minFrom)};
 }
 
