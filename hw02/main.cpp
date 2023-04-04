@@ -51,11 +51,16 @@ struct Map {
 
 // --- Preprocessing ----------------------------------------------------------
 using Point = uint32_t;
+using Profit = uint32_t;
+using Level = uint32_t;
 // translates places to int
 using PlaceToPoint = std::unordered_map<Place, Point>;
 
 using Graph = std::vector<std::vector<Point>>;
 
+/*
+ * Holds graph capacities and flow in n x n matrixes
+ */
 class Flow {
     size_t cnt;
     std::vector<Capacity> capacities;
@@ -68,6 +73,7 @@ class Flow {
   public:
     Flow(size_t cnt) : cnt(cnt), capacities(cnt * cnt), flow(cnt * cnt) {}
 
+    // this task expects undirected graph, can be updated to direct one here
     void addCapacity(Point u, Point v, Capacity c) {
       capacities[toIndex(u, v)] += c;
       capacities[toIndex(v, u)] += c;
@@ -78,6 +84,8 @@ class Flow {
       const size_t backward = toIndex(v, u);
       // printf("Sending for %2u %2u of %2u ", u, v, f);
 
+      // we prefer lowering the flow in the opposite direction
+      // and than increasing flow in our direction
       if (flow[backward] <= f) {
         f -= flow[backward];
         flow[backward] = 0;
@@ -104,10 +112,14 @@ class Flow {
       return reserve;
     }
 
+    // yeah, that should be separated, I know
     void resetFlow() {
       std::fill(flow.begin(), flow.end(), 0);
     }
 
+    /*
+     * Computes the total flow in the network for a source vertex
+     */
     Capacity amount(const Graph& graph, const Point u) const {
       Capacity sum = 0;
       for (const Point v : graph[u]) {
@@ -124,15 +136,17 @@ struct Network {
   Flow  flow;
 };
 
+// Prevents an edge being added twice
 void addItem(std::vector<Point>& v, const Point item) {
   auto itr = std::lower_bound(v.begin(), v.end(), item);
   if (itr != v.end() && *itr == item) return;
   v.insert(itr, item);
 }
 
+// Removed edge
 void eraseItem(std::vector<Point>& v, const Point item) {
-  auto itr = std::find(v.begin(), v.end(), item);
-  if (itr != v.end()) {
+  auto itr = std::lower_bound(v.begin(), v.end(), item);
+  if (itr != v.end() && *itr == item) {
     v.erase(itr);
   }
 }
@@ -147,6 +161,7 @@ void printGraph(const Graph& graph) {
   }
 }
 
+// Graphviz dump
 void dumpGraph(const Graph& graph, char name) {
   for (size_t i = 0; i < graph.size(); ++i) {
     for (const auto& children : graph[i]) {
@@ -155,6 +170,7 @@ void dumpGraph(const Graph& graph, char name) {
   }
 }
 
+// Renames places to ints, clears loops and multi-edges
 Network preprocess(const Map& map) {
   const size_t nodeCnt = map.places.size();
 
@@ -184,14 +200,16 @@ Network preprocess(const Map& map) {
 }
 
 
-struct Dfs {
+// --- Dinitz -----------------------------------------------------------------
+struct DinitzDfs {
   Graph& dinitzGraph;
   Flow&  flow;
   std::vector<Point>& toClean;
 
-  Dfs(Graph& dinitzGraph, Flow& flow,std::vector<Point>& toClean) : dinitzGraph(dinitzGraph), flow(flow), toClean(toClean) {}
+  DinitzDfs(Graph& dinitzGraph, Flow& flow,std::vector<Point>& toClean) : dinitzGraph(dinitzGraph), flow(flow), toClean(toClean) {}
 
   /**
+   * Finds a route for saturation
    * @return new flow added, 0 if path was not found
    */
   Capacity saturateShortesPath(const Point end, const Point u, Capacity currReserve) {
@@ -202,6 +220,7 @@ struct Dfs {
     }
 
     auto& edges = dinitzGraph[u];
+    // tries all the edges - should be useless (should stop only if u == from and graph is empty)
     while(!edges.empty()) {
       const Point v = edges.back();
       const Capacity localReserve = flow.getReserve(u, v);
@@ -225,9 +244,9 @@ struct Dfs {
 
       // if the edge is fully saturated, clear it
       if (flow.getReserve(u, v) == 0) {
-        eraseItem(dinitzGraph[u], v);
+        edges.pop_back();
 
-        if (dinitzGraph[u].size() == 0) {
+        if (edges.size() == 0) {
           toClean.push_back(u);
         }
       }
@@ -239,13 +258,17 @@ struct Dfs {
   };
 };
 
-void cleanGraph(const std::vector<uint32_t>& levels, std::vector<Point>& toClean, const Graph& graph, Graph& dinitzGraph) {
-    // Dinitz cleaning
+/*
+ * Cleans unreachable vertexes in the current Dinitz graph
+ * Cleaning is scheduled before each shortest non-saturated path lookup
+ */
+void dinitzCleanGraph(std::vector<Level>& levels, std::vector<Point>& toClean, const Graph& graph, Graph& dinitzGraph) {
     while (!toClean.empty()) {
       const Point v = toClean.back();
       toClean.pop_back();
 
-      const uint32_t level = levels[v];
+      const Level level = levels[v];
+      levels[v] = 0;
 
       for (const auto& u : graph[v]) {
         if (levels[u] != level - 1) continue;
@@ -253,6 +276,7 @@ void cleanGraph(const std::vector<uint32_t>& levels, std::vector<Point>& toClean
         auto& edges = dinitzGraph[u];
         eraseItem(edges, v);
 
+        // vertex is useless now
         if (edges.size() == 0) {
           toClean.push_back(u);
         }
@@ -267,10 +291,12 @@ void dinitz(Network& network, const Point from, const Point to) {
   flow.resetFlow();
 
   // printf("Dinitz\n");
+
+  // Runs until non-saturated path is frond from from to to
   while(true) {
     // printf("Iteration\n");
-    std::vector<uint32_t> levels(network.size);
-    std::vector<Point> toClean;
+    std::vector<Level> levels(network.size);
+    std::vector<Point> toClean; toClean.reserve(network.size / 4);
     Graph dinitzGraph(network.size);
     bool targetFound = false;
 
@@ -291,7 +317,7 @@ void dinitz(Network& network, const Point from, const Point to) {
           break;
         }
 
-        uint32_t nextLevel = levels[u] + 1;
+        const Level nextLevel = levels[u] + 1;
 
         const auto& edges = graph[u];
 
@@ -306,19 +332,20 @@ void dinitz(Network& network, const Point from, const Point to) {
             continue;
           }
 
-          queue.emplace(v);
           levels[v] = nextLevel;
-          dinitzGraph[u].emplace_back(v);
+          queue.emplace(v);
+          addItem(dinitzGraph[u], v);
         }
 
+        // no child added - useless, let's clean it
         if (dinitzGraph[u].size() == 0) {
           toClean.push_back(u);
         }
       }
 
+      // no path found, we got the max flow
       if (targetFound == false) {
         return;
-        break;
       }
     }
 
@@ -326,12 +353,13 @@ void dinitz(Network& network, const Point from, const Point to) {
     // printGraph(dinitzGraph);
 
     // Finding shortest path
-    Dfs dfs(dinitzGraph, flow, toClean);
+    DinitzDfs dfs(dinitzGraph, flow, toClean);
     while(true) {
 
-        // printf("Filling\n");
-        cleanGraph(levels, toClean, graph, dinitzGraph);
+      // clears useless edges/vetexes
+      dinitzCleanGraph(levels, toClean, graph, dinitzGraph);
 
+      // Tries to find the shortest unsaturated route
       if (dfs.saturateShortesPath(to, from, (Capacity) -1) == 0) {
         break;
       }
@@ -346,6 +374,7 @@ void dinitz(Network& network, const Point from, const Point to) {
 void fordFulkersonUpdateRoute(Network& network, const std::vector<Point>& parents, const Point from, const Point to) {
   Capacity minReserve = (Capacity) -1;
   {
+    // Find min reserve on the path
     Point v = to;
     while(v != from) {
       const Point u = parents[v] - 1;
@@ -354,6 +383,7 @@ void fordFulkersonUpdateRoute(Network& network, const std::vector<Point>& parent
     }
   }
   {
+    // Send flow trough the path
     Point v = to;
     while(v != from) {
       const Point u = parents[v] - 1;
@@ -367,6 +397,7 @@ void fordFulkerson(Network& network, const Point from, const Point to) {
 
   network.flow.resetFlow();
 
+  // just BFS in a cycle
   while(true) {
     std::vector<Point> parents(network.size);
     std::queue<Point> queue;
@@ -415,8 +446,10 @@ void fordFulkerson(Network& network, const Point from, const Point to) {
 
 
 // --- Goldberg ---------------------------------------------------------------
-using Profit = uint32_t;
-using Level = uint32_t;
+/**
+ * Heuristic to improve rising time
+ * Set default levels to the distance from the target
+ */
 void goldbergInitLevels(Network& network, const Point from, const Point to, std::vector<Level>& levels, std::vector<uint32_t>& inLevel) {
   const size_t nsize = network.size;
   inLevel[0] = nsize;
@@ -438,31 +471,32 @@ void goldbergInitLevels(Network& network, const Point from, const Point to, std:
     }
   }
 
+  // this will the true if the is at least 1 vertex incident with to
+  // the algorithm above will got back to to (just one)
   if (levels[to] != 0) {
     --inLevel[levels[to]];
     ++inLevel[0];
     levels[to] = 0;
   }
 
-
+  // According to the Goldberg rule
   --inLevel[levels[from]];
   ++inLevel[nsize];
   levels[from] = nsize;
 }
 
+// Also known as push-relabel
 void goldberg(Network& network, const Point from, const Point to) {
   network.flow.resetFlow();
 
   const size_t nsize = network.size;
   std::vector<Profit> profits(nsize);
   std::vector<Level> levels(nsize);
-  std::queue<Point> queue;
-  // TODO priority queue
   std::vector<uint32_t> inLevel(nsize * 2);
+  std::queue<Point> queue;
 
   goldbergInitLevels(network, from, to, levels, inLevel);
 
-  // init
   queue.push(from);
 
   while(!queue.empty()) {
@@ -479,21 +513,30 @@ void goldberg(Network& network, const Point from, const Point to) {
 
     // printf("[%2u] Processing\n", u);
 
+    // target cannot be changed in any way
     if (u == to) { continue; }
 
+    // we can get as much as we want only from the source
     Profit canSend = from == u ? std::numeric_limits<Profit>::max() : profits[u];
+    // The vertex was twice in the queue and was already resolved
     if (canSend == 0) { continue; }
+
     const Level level = levels[u];
     // printf("[%2u] Can send: %u\n", u, canSend);
 
-    uint16_t updatedChilds = 0;
+    // if the vertex succeed to send some of it's profit to a neighbour
+    bool updatedChilds = false;
+
     for (const Point v : network.graph[u]) {
+      // can send only to the lower nodes
       if (level <= levels[v]) continue;
       if (canSend == 0) { break; }
 
       const Capacity reserve = network.flow.getReserve(u, v);
       // const Capacity reserveInverse = network.flow.getReserve(u, v);
       if (reserve == 0) { continue; }
+
+      // calculate and send flow
       const Profit willSend = std::min(reserve, canSend);
       canSend -= willSend;
       if (v != from) {
@@ -503,19 +546,24 @@ void goldberg(Network& network, const Point from, const Point to) {
       // printf("[%2u] Sedning to [%2u] flow %u\n", u, v, willSend);
       // printf("[%2u] Reserves: (%u - %u) - (%u - %u)\n", u, reserve, reserveInverse, network.flow.getReserve(u, v), network.flow.getReserve(v, u));
 
+      // schedule the node if needed
       if (v != from && profits[v] > 0) {
         queue.push(v);
       }
-      updatedChilds++;
+
+      updatedChilds = true;
     }
 
     profits[u] = canSend;
 
-    if (updatedChilds == 0 && u != from) {
+    // failed to send any profit - inc level
+    if (updatedChilds == false && u != from) {
       levels[u]++;
       --inLevel[level];
       ++inLevel[level + 1];
 
+      // empty level found
+      // all the nodes 0 < l[p] < |V| can be lifted to |V+1|
       if (inLevel[level] == 0 && level < nsize - 1) {
         const Level newLevel = nsize + 1;
 
@@ -535,6 +583,7 @@ void goldberg(Network& network, const Point from, const Point to) {
       // printf("[%2u] Lifting to level %u\n", u, levels[u]);
     }
 
+    // still can send something? Lets run again later
     if (canSend > 0 && u != from) {
       // printf("[%2u] Rescheduling\n", u);
       queue.push(u);
@@ -547,9 +596,12 @@ void goldberg(Network& network, const Point from, const Point to) {
 void algorithm(Network& network, const Point from, const Point to) {
   // dinitz(network, from, to);
   // fordFulkerson(network, from, to);
-  goldberg(network, from, to);
+  // goldberg(network, from, to);
 }
 
+/**
+ * Runs a simple BFS on the flow found by any of the prev algorithms
+ */
 std::set<Place> findReachable(const Map& map, const Network& network, Point from) {
   std::set<Place> places;
   const Graph& graph = network.graph;
@@ -719,6 +771,8 @@ std::array TESTS = {
     { "Kusá", "Psohlavců", 2 }, { "Kusá", "Ke Koulce", 2 },
     { "Dolnopočernický hřbitov", "Bílá Hora", 4 },
   }}},
+  Test{0, {{ "Na Lukách", }, { { "Na Lukách", "Na Lukách", 7 }, }}},
+  Test{0, {{}, {}}},
 };
 
 void printAnswer(Capacity c, std::set<Place> places) {
