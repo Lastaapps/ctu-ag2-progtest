@@ -91,6 +91,11 @@ class Flow {
       // printf("(%2u, %2u)\n", flow[forward], flow[backward]);
     }
 
+    Capacity getCapacity(Point u, Point v) const {
+      const size_t forward  = toIndex(u, v);
+      return capacities[forward];
+    }
+
     Capacity getReserve(Point u, Point v) const {
       const size_t forward  = toIndex(u, v);
       const size_t backward = toIndex(v, u);
@@ -106,14 +111,15 @@ class Flow {
     Capacity amount(const Graph& graph, const Point u) const {
       Capacity sum = 0;
       for (const Point v : graph[u]) {
-        const size_t index = toIndex(u, v);
-        sum += flow[index];
+        sum += flow[toIndex(u, v)];
+        sum -= flow[toIndex(v, u)];
       }
       return sum;
     }
 };
 
 struct Network {
+  size_t size;
   Graph graph;
   Flow  flow;
 };
@@ -141,13 +147,21 @@ void printGraph(const Graph& graph) {
   }
 }
 
+void dumpGraph(const Graph& graph, char name) {
+  for (size_t i = 0; i < graph.size(); ++i) {
+    for (const auto& children : graph[i]) {
+      std::cout << name << i << " -> " << name << children << ";" << std::endl;
+    }
+  }
+}
+
 Network preprocess(const Map& map) {
   const size_t nodeCnt = map.places.size();
 
   PlaceToPoint toPoint;
   toPoint.reserve(nodeCnt);
 
-  for (Point id = 0; id < map.places.size(); ++id) {
+  for (Point id = 0; id < nodeCnt; ++id) {
     const auto& place = map.places[id];
     toPoint.insert({place, id});
   }
@@ -166,7 +180,7 @@ Network preprocess(const Map& map) {
     capacities.addCapacity(from, to, cap);
   }
 
-  return {std::move(graph), std::move(capacities)};
+  return {nodeCnt, std::move(graph), std::move(capacities)};
 }
 
 
@@ -250,15 +264,14 @@ void dinitz(Network& network, const Point from, const Point to) {
 
   const Graph& graph = network.graph;
   Flow& flow = network.flow;
-  const size_t nodeCnt = graph.size();
   flow.resetFlow();
 
   // printf("Dinitz\n");
   while(true) {
     // printf("Iteration\n");
-    std::vector<uint32_t> levels(nodeCnt);
+    std::vector<uint32_t> levels(network.size);
     std::vector<Point> toClean;
-    Graph dinitzGraph(nodeCnt);
+    Graph dinitzGraph(network.size);
     bool targetFound = false;
 
     // BFS
@@ -326,39 +339,10 @@ void dinitz(Network& network, const Point from, const Point to) {
   }
 }
 
-std::set<Place> findReachable(const Map& map, const Network& network, Point from) {
-  const size_t nodeCnt = map.places.size();
 
-  std::set<Place> places;
-  const Graph& graph = network.graph;
-  const Flow&  flow  = network.flow;
 
-  std::queue<Point> queue;
-  std::vector<bool> visited(nodeCnt);
-  queue.push(from);
-  visited[from] = true;
 
-  while(!queue.empty()) {
-    const Point point = queue.front();
-    queue.pop();
-
-    places.insert(map.places[point]);
-
-    for(const auto& target : graph[point]) {
-      if (visited[target]) {
-        continue;
-      }
-      if (flow.getReserve(point, target) == 0) {
-        continue;
-      }
-      visited[target] = true;
-      queue.push(target);
-    }
-  }
-
-  return places;
-}
-
+// --- Ford Fulkerson ---------------------------------------------------------
 void fordFulkersonUpdateRoute(Network& network, const std::vector<Point>& parents, const Point from, const Point to) {
   Capacity minReserve = (Capacity) -1;
   {
@@ -384,7 +368,7 @@ void fordFulkerson(Network& network, const Point from, const Point to) {
   network.flow.resetFlow();
 
   while(true) {
-    std::vector<Point> parents(network.graph.size());
+    std::vector<Point> parents(network.size);
     std::queue<Point> queue;
     bool targetFound = false;
 
@@ -426,6 +410,177 @@ void fordFulkerson(Network& network, const Point from, const Point to) {
   }
 }
 
+
+
+
+
+// --- Goldberg ---------------------------------------------------------------
+using Profit = uint32_t;
+using Level = uint32_t;
+void goldbergInitLevels(Network& network, const Point from, const Point to, std::vector<Level>& levels, std::vector<uint32_t>& inLevel) {
+  const size_t nsize = network.size;
+  inLevel[0] = nsize;
+
+  std::queue<Point> queue;
+  queue.push(to);
+  while(!queue.empty()) {
+    const Point u = queue.front();
+    queue.pop();
+
+    const Level level = levels[u];
+    --inLevel[0];
+    ++inLevel[level];
+
+    for (const Point v : network.graph[u]) {
+      if (levels[v] != 0) { continue; }
+      levels[v] = level + 1;
+      queue.push(v);
+    }
+  }
+
+  if (levels[to] != 0) {
+    --inLevel[levels[to]];
+    ++inLevel[0];
+    levels[to] = 0;
+  }
+
+
+  --inLevel[levels[from]];
+  ++inLevel[nsize];
+  levels[from] = nsize;
+}
+
+void goldberg(Network& network, const Point from, const Point to) {
+  network.flow.resetFlow();
+
+  const size_t nsize = network.size;
+  std::vector<Profit> profits(nsize);
+  std::vector<Level> levels(nsize);
+  std::queue<Point> queue;
+  // TODO priority queue
+  std::vector<uint32_t> inLevel(nsize * 2);
+
+  goldbergInitLevels(network, from, to, levels, inLevel);
+
+  // init
+  queue.push(from);
+
+  while(!queue.empty()) {
+    const Point u = queue.front();
+    queue.pop();
+
+    // for (size_t i = 0; i < levels.size(); ++i) {
+    //   printf("[%2lu] DEBUG p: %2u, l: %2u - ", i, profits[i], levels[i]);
+    //   for (const Point v : network.graph[i]) {
+    //     printf(" |[%2u] %2u|,", v, network.flow.getReserve(i, v));
+    //   }
+    //   printf("\n");
+    // }
+
+    // printf("[%2u] Processing\n", u);
+
+    if (u == to) { continue; }
+
+    Profit canSend = from == u ? std::numeric_limits<Profit>::max() : profits[u];
+    if (canSend == 0) { continue; }
+    const Level level = levels[u];
+    // printf("[%2u] Can send: %u\n", u, canSend);
+
+    uint16_t updatedChilds = 0;
+    for (const Point v : network.graph[u]) {
+      if (level <= levels[v]) continue;
+      if (canSend == 0) { break; }
+
+      const Capacity reserve = network.flow.getReserve(u, v);
+      // const Capacity reserveInverse = network.flow.getReserve(u, v);
+      if (reserve == 0) { continue; }
+      const Profit willSend = std::min(reserve, canSend);
+      canSend -= willSend;
+      if (v != from) {
+        profits[v] += willSend;
+      }
+      network.flow.sendFlow(u, v, willSend);
+      // printf("[%2u] Sedning to [%2u] flow %u\n", u, v, willSend);
+      // printf("[%2u] Reserves: (%u - %u) - (%u - %u)\n", u, reserve, reserveInverse, network.flow.getReserve(u, v), network.flow.getReserve(v, u));
+
+      if (v != from && profits[v] > 0) {
+        queue.push(v);
+      }
+      updatedChilds++;
+    }
+
+    profits[u] = canSend;
+
+    if (updatedChilds == 0 && u != from) {
+      levels[u]++;
+      --inLevel[level];
+      ++inLevel[level + 1];
+
+      if (inLevel[level] == 0 && level < nsize - 1) {
+        const Level newLevel = nsize + 1;
+
+        for (Point p = 0; p < nsize; ++p) {
+          if (p == from || p == to) { continue; }
+
+          const Level pLevel = levels[p];
+
+          if (pLevel > level && pLevel < nsize) {
+            --inLevel[pLevel];
+            ++inLevel[newLevel];
+            levels[p] = newLevel;
+          }
+        }
+      }
+
+      // printf("[%2u] Lifting to level %u\n", u, levels[u]);
+    }
+
+    if (canSend > 0 && u != from) {
+      // printf("[%2u] Rescheduling\n", u);
+      queue.push(u);
+    }
+  }
+}
+
+
+// --- Common code ------------------------------------------------------------
+void algorithm(Network& network, const Point from, const Point to) {
+  // dinitz(network, from, to);
+  // fordFulkerson(network, from, to);
+  goldberg(network, from, to);
+}
+
+std::set<Place> findReachable(const Map& map, const Network& network, Point from) {
+  std::set<Place> places;
+  const Graph& graph = network.graph;
+  const Flow&  flow  = network.flow;
+
+  std::queue<Point> queue;
+  std::vector<bool> visited(network.size);
+  queue.push(from);
+  visited[from] = true;
+
+  while(!queue.empty()) {
+    const Point point = queue.front();
+    queue.pop();
+
+    places.insert(map.places[point]);
+
+    for(const auto& target : graph[point]) {
+      if (visited[target]) {
+        continue;
+      }
+      if (flow.getReserve(point, target) == 0) {
+        continue;
+      }
+      visited[target] = true;
+      queue.push(target);
+    }
+  }
+
+  return places;
+}
+
 std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
   const size_t nodeCnt = map.places.size();
   if (nodeCnt <= 1) {
@@ -436,6 +591,7 @@ std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
 
   // printf("Parsed graph:\n");
   // printGraph(network.graph);
+  // dumpGraph(network.graph, 'a');
 
   Point minFrom = 0;
   Point minTo   = 0;
@@ -444,8 +600,8 @@ std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
   Point from = 0;
   // for (Point from = 0; from < nodeCnt; ++from) {
     for (Point to = from + 1; to < nodeCnt; ++to) {
-      // printf("Running dinitz %d - %d\n", from, to);
-      fordFulkerson(network, from, to);
+      // printf("Running for %d - %d\n", from, to);
+      algorithm(network, from, to);
       Capacity cnt = network.flow.amount(network.graph, from);
       if (cnt < minPeople) {
         minPeople = cnt;
@@ -456,7 +612,7 @@ std::pair<Capacity, std::set<Place>> critical_streets(const Map& map) {
     }
   // }
 
-  fordFulkerson(network, minFrom, minTo);
+  algorithm(network, minFrom, minTo);
   return {network.flow.amount(network.graph, minFrom), findReachable(map, network, minFrom)};
 }
 
@@ -578,6 +734,10 @@ void test(C&& tests) {
   int fail = 0, ok = 0, cnt = 1;
 
   for (auto&& [ ref_s, map ] : tests) {
+    // if (cnt != 2) {
+    //   cnt++;
+    //   continue;
+    // }
     auto [ s, places ] = critical_streets(map);
     printAnswer(s, places);
     if (s == ref_s) {
@@ -596,7 +756,9 @@ void test(C&& tests) {
 }
 
 int main() {
-  test(TESTS);
+  for (int i = 0; i < 100; ++i) {
+    test(TESTS);
+  }
 }
 
 #endif
