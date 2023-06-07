@@ -1,3 +1,4 @@
+#include <cstdio>
 #ifndef __PROGTEST__
 #include <cassert>
 #include <cstdint>
@@ -990,7 +991,52 @@ void test(C&& tests) {
     std::cout << "All " << ok << " tests succeded!" << std::endl;
 }
 
+size_t nextInt(size_t from, size_t to) {
+    return from + std::rand() % (to - from);
+}
+
+Network generate() {
+    const size_t problemSize = nextInt(2, 15);
+
+    Graph graph(problemSize);
+    Flow flow(problemSize);
+
+    for (size_t i = 0; i < problemSize; ++i) {
+      for (size_t j = i + 1; j < problemSize; ++j) {
+        if (nextInt(0, 4) == 0) { continue; }
+        graph[i].push_back(j);
+        graph[j].push_back(i);
+        flow.addCapacity(i, j, nextInt(0, 10));
+      }
+    }
+    return { problemSize, graph, flow };
+}
+
+void runRandomTest() {
+    // printf("Running test\n");
+    Network n1 = generate(), n2 = n1;
+
+    // printf("Running Goldberg\n");
+    goldberg(n1, 0, 1);
+
+    // printf("Running Dinic\n");
+    dinitz2 (n2, 0, 1);
+
+    const size_t res1 = n1.flow.amount(n1.graph, 0);
+    const size_t res2 = n2.flow.amount(n2.graph, 0);
+
+    if (res1 == res2) { return; }
+
+    printf("Results differ: %lu x %lu\n", res1, res2);
+    printGraph(n1.graph);
+
+    assert(false);
+}
+
 int main() {
+  for (int i = 0; i < 100'000; ++i) {
+      runRandomTest();
+  }
   for (int i = 0; i < 100; ++i) {
     test(TESTS);
   }
