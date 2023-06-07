@@ -370,6 +370,186 @@ void dinitz(Network& network, const Point from, const Point to) {
 
 
 
+
+// --- Dinitz 2 ---------------------------------------------------------------
+struct Dinitz2Dfs {
+  const Graph& graph;
+  Flow&  flow;
+  std::vector<std::vector<bool>>& marked;
+  std::vector<Point>& toClean;
+  std::vector<uint32_t>& outCnt;
+
+  Dinitz2Dfs(
+      const Graph& graph,
+      Flow& flow,
+      std::vector<std::vector<bool>>& marked,
+      std::vector<Point>& toClean,
+      std::vector<uint32_t>& outCnt
+      ) : graph(graph), flow(flow), marked(marked), toClean(toClean), outCnt(outCnt) {}
+
+  /**
+   * Finds a route for saturation
+   * @return new flow added, 0 if path was not found
+   */
+  Capacity saturateShortesPath(const Point end, const Point u, Capacity currReserve) {
+    // printf("DFS Processing %u\n", u);
+
+    if (end == u) {
+      return currReserve;
+    }
+
+    // tries all the edges - should be useless (should stop only if u == from and graph is empty)
+    for (const Point v : graph[u]) {
+      if (marked[u][v]) { continue; }
+
+      const Capacity localReserve = flow.getReserve(u, v);
+      // if (localReserve == 0) { continue; }
+      assert(localReserve != 0);
+
+      const Capacity minReserve = saturateShortesPath(end, v, std::min(localReserve, currReserve));
+
+      // no path found - should not happen
+      // if (minReserve == 0) { continue; }
+      assert(minReserve != 0);
+
+      // updates flow
+      flow.sendFlow(u, v, minReserve);
+
+      // if the edge is fully saturated, clear it
+      if (minReserve == localReserve) {
+        marked[u][v] = true;
+
+        if (--outCnt[u] == 0) { toClean.push_back(u); }
+      }
+
+      // edge not fully saturated
+      return minReserve;
+    }
+
+    return 0;
+  };
+};
+
+/*
+ * Cleans unreachable vertexes in the current Dinitz graph
+ * Cleaning is scheduled before each shortest non-saturated path lookup
+ */
+void dinitz2CleanGraph(
+        std::vector<std::vector<bool>>& marked,
+        std::vector<Point>& toClean,
+        const Graph& graph,
+        std::vector<uint32_t>& outCnt
+        ) {
+    while (!toClean.empty()) {
+      const Point v = toClean.back();
+      toClean.pop_back();
+
+      for (const auto& u : graph[v]) {
+
+        if (marked[u][v]) { continue; }
+        marked[u][v] = true;
+
+        if (--outCnt[u] == 0) {
+          // vertex is useless now
+          toClean.push_back(u);
+        }
+      }
+    }
+}
+
+void dinitz2(Network& network, const Point from, const Point to) {
+
+  const Graph& graph = network.graph;
+  Flow& flow = network.flow;
+  flow.resetFlow();
+
+  // printf("Dinitz (%u -> %u)\n", from, to);
+  // printGraph(graph);
+
+  // Runs until non-saturated path is found from from to to
+  while(true) {
+    // printf("Iteration (%u -> %u)\n", from, to);
+    std::vector<uint32_t> outCnt(network.size);
+    std::vector<Point> toClean; toClean.reserve(network.size / 4);
+    std::vector<std::vector<bool>> marked(network.size, std::vector<bool>(network.size, false));
+    bool targetFound = false;
+
+    // BFS
+    {
+      std::vector<Level> levels(network.size);
+      std::queue<Point> queue;
+      queue.emplace(from);
+      levels[from] = 2;
+
+      while (!queue.empty()) {
+        Point u = queue.front();
+        queue.pop();
+
+        if (u == to) {
+          targetFound = true;
+          // break; // full graph has to be marked
+        }
+
+        const Level nextLevel = levels[u] + 1;
+
+        const auto& edges = graph[u];
+
+        for (size_t i = 0; i < edges.size(); ++i) {
+          const Point v = edges[i];
+
+          const Capacity reserve = flow.getReserve(u, v);
+          if (reserve == 0) {
+            marked[u][v] = true;
+            continue;
+          }
+
+          if (levels[v] == nextLevel) {
+              ++outCnt[u];
+              continue;
+          }
+          if (levels[v] != 0) {
+            marked[u][v] = true;
+            continue;
+          }
+
+          levels[v] = nextLevel;
+          queue.emplace(v);
+          ++outCnt[u];
+        }
+      }
+
+      // no path found, we got the max flow
+      if (targetFound == false) {
+        return;
+      }
+
+      outCnt[to] = (Point) -1; // prevent to being removed
+      for (Point u = 0; u < network.size; ++u) {
+        // no child added - useless, let's clean it
+        if (outCnt[u] == 0 && levels[u] != 0) {
+          toClean.push_back(u);
+        }
+      }
+    }
+
+    // Finding shortest path
+    Dinitz2Dfs dfs(graph, flow, marked, toClean, outCnt);
+    while(true) {
+
+      // clears useless edges/vetexes
+      dinitz2CleanGraph(marked, toClean, graph, outCnt);
+
+      // Tries to find the shortest unsaturated route
+      if (dfs.saturateShortesPath(to, from, (Capacity) -1) == 0) {
+        break;
+      }
+    }
+  }
+}
+
+
+
+
 // --- Ford Fulkerson ---------------------------------------------------------
 void fordFulkersonUpdateRoute(Network& network, const std::vector<Point>& parents, const Point from, const Point to) {
   Capacity minReserve = (Capacity) -1;
@@ -595,6 +775,7 @@ void goldberg(Network& network, const Point from, const Point to) {
 // --- Common code ------------------------------------------------------------
 void algorithm(Network& network, const Point from, const Point to) {
   // dinitz(network, from, to);
+  dinitz2(network, from, to);
   // fordFulkerson(network, from, to);
   // goldberg(network, from, to);
 }
